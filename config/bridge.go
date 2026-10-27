@@ -94,6 +94,10 @@ type BridgeConfig struct {
 
 	Permissions bridgeconfig.PermissionConfig `yaml:"permissions"`
 
+	// Matrix user ID -> Discord bot token. Reactions from these relay-only Matrix users are
+	// added to Discord as real reactions by the mapped bot account (webhooks can't react).
+	ReactionRelayBots map[string]string `yaml:"reaction_relay_bots"`
+
 	usernameTemplate    *template.Template `yaml:"-"`
 	displaynameTemplate *template.Template `yaml:"-"`
 	channelNameTemplate *template.Template `yaml:"-"`

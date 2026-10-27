@@ -99,7 +99,8 @@ func (portal *Portal) MarkEncrypted() {
 }
 
 func (portal *Portal) ReceiveMatrixEvent(user bridge.User, evt *event.Event) {
-	if user.GetPermissionLevel() >= bridgeconfig.PermissionLevelUser || portal.RelayWebhookID != "" {
+	if user.GetPermissionLevel() >= bridgeconfig.PermissionLevelUser || portal.RelayWebhookID != "" ||
+		portal.bridge.GetReactionRelayBot(user.GetMXID()) != nil {
 		portal.matrixMessages <- portalMatrixMessage{user: user.(*User), evt: evt}
 	}
 }
@@ -1929,9 +1930,17 @@ func (portal *Portal) getMatrixUsers() ([]id.UserID, error) {
 }
 
 func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
+	// Relay-only users have no Discord session. If a stand-in bot is configured for them,
+	// react through it; otherwise the reaction can't be bridged (webhooks can't react).
+	var relayBot *ReactionRelayBot
+	senderID := sender.DiscordID
 	if !sender.IsLoggedIn() {
-		go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
-		return
+		relayBot = portal.bridge.GetReactionRelayBot(sender.MXID)
+		if relayBot == nil || portal.IsPrivateChat() {
+			go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
+			return
+		}
+		senderID = relayBot.UserID
 	}
 	if portal.IsPrivateChat() && sender.DiscordID != portal.Key.Receiver {
 		go portal.sendMessageMetrics(evt, errUserNotReceiver, "Ignoring")
@@ -1945,6 +1954,10 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 	}
 
 	if reaction.RelatesTo.Key == JoinThreadReaction {
+		if relayBot != nil {
+			go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring thread join")
+			return
+		}
 		thread := portal.bridge.GetThreadByRootOrCreationNoticeMXID(reaction.RelatesTo.EventID)
 		if thread == nil {
 			go portal.sendMessageMetrics(evt, errTargetNotFound, "Ignoring thread join")
@@ -1983,7 +1996,7 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 		emojiID = variationselector.FullyQualify(emojiID)
 	}
 
-	existing := portal.bridge.DB.Reaction.GetByDiscordID(portal.Key, msg.DiscordID, sender.DiscordID, emojiID)
+	existing := portal.bridge.DB.Reaction.GetByDiscordID(portal.Key, msg.DiscordID, senderID, emojiID)
 	if existing != nil {
 		portal.log.Debug().
 			Str("event_id", evt.ID.String()).
@@ -1993,14 +2006,19 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 		return
 	}
 
-	err := sender.Session.MessageReactionAddUser(portal.GuildID, msg.DiscordProtoChannelID(), msg.DiscordID, emojiID)
+	var err error
+	if relayBot != nil {
+		err = relayBot.Session.MessageReactionAdd(msg.DiscordProtoChannelID(), msg.DiscordID, emojiID)
+	} else {
+		err = sender.Session.MessageReactionAddUser(portal.GuildID, msg.DiscordProtoChannelID(), msg.DiscordID, emojiID)
+	}
 	go portal.sendMessageMetrics(evt, err, "Error sending")
 	if err == nil {
 		dbReaction := portal.bridge.DB.Reaction.New()
 		dbReaction.Channel = portal.Key
 		dbReaction.MessageID = msg.DiscordID
 		dbReaction.FirstAttachmentID = firstMsg.AttachmentID
-		dbReaction.Sender = sender.DiscordID
+		dbReaction.Sender = senderID
 		dbReaction.EmojiName = emojiID
 		dbReaction.ThreadID = msg.ThreadID
 		dbReaction.MXID = evt.ID
@@ -2009,6 +2027,15 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 }
 
 func (portal *Portal) handleDiscordReaction(user *User, reaction *discordgo.MessageReaction, add bool, thread *Thread, member *discordgo.Member) {
+	if add && portal.bridge.IsReactionRelayBot(reaction.UserID) {
+		// This reaction was relayed from Matrix by a stand-in bot, so the Matrix side already
+		// has it. Removals are still processed so a reaction deleted on Discord gets cleaned up.
+		portal.log.Debug().
+			Str("message_id", reaction.MessageID).
+			Str("author_id", reaction.UserID).
+			Msg("Ignoring reaction echo from reaction relay bot")
+		return
+	}
 	puppet := portal.bridge.GetPuppetByID(reaction.UserID)
 	if member != nil {
 		puppet.UpdateInfo(user, member.User, nil)
@@ -2125,7 +2152,11 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 	}
 
 	sess := sender.Session
-	if sess == nil && portal.RelayWebhookID == "" {
+	var relayBot *ReactionRelayBot
+	if sess == nil {
+		relayBot = portal.bridge.GetReactionRelayBot(sender.MXID)
+	}
+	if sess == nil && portal.RelayWebhookID == "" && relayBot == nil {
 		go portal.sendMessageMetrics(evt, errUserNotLoggedIn, "Ignoring")
 		return
 	}
@@ -2136,9 +2167,11 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 		// TODO add support for deleting individual attachments from messages
 		if sess != nil {
 			err = sess.ChannelMessageDelete(message.DiscordProtoChannelID(), message.DiscordID, portal.RefererOptIfUser(sess, message.ThreadID)...)
-		} else {
+		} else if portal.RelayWebhookID != "" {
 			// TODO pre-validate that the message was sent by the webhook?
 			err = relayClient.WebhookMessageDelete(portal.RelayWebhookID, portal.RelayWebhookSecret, message.DiscordID)
+		} else {
+			err = errUserNotLoggedIn
 		}
 		go portal.sendMessageMetrics(evt, err, "Error sending")
 		if err == nil {
@@ -2147,10 +2180,18 @@ func (portal *Portal) handleMatrixRedaction(sender *User, evt *event.Event) {
 		return
 	}
 
-	if sess != nil {
+	if sess != nil || relayBot != nil {
 		reaction := portal.bridge.DB.Reaction.GetByMXID(evt.Redacts)
 		if reaction != nil && reaction.Channel == portal.Key {
-			err := sess.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
+			var err error
+			if sess != nil {
+				err = sess.MessageReactionRemoveUser(portal.GuildID, reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, reaction.Sender)
+			} else if reaction.Sender == relayBot.UserID {
+				err = relayBot.Session.MessageReactionRemove(reaction.DiscordProtoChannelID(), reaction.MessageID, reaction.EmojiName, "@me")
+			} else {
+				// A relay user can only remove reactions their own stand-in bot added.
+				err = errUserNotLoggedIn
+			}
 			go portal.sendMessageMetrics(evt, err, "Error sending")
 			if err == nil {
 				reaction.Delete()

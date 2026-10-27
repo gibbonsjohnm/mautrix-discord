@@ -79,6 +79,8 @@ type DiscordBridge struct {
 
 	attachmentTransfers         *exsync.Map[attachmentKey, *exsync.ReturnableOnce[*database.File]]
 	parallelAttachmentSemaphore *semaphore.Weighted
+
+	reactionRelayBots *reactionRelayRegistry
 }
 
 func (br *DiscordBridge) GetExampleConfig() string {
@@ -112,6 +114,7 @@ func (br *DiscordBridge) Start() {
 		br.AS.Router.HandleFunc("/mautrix-discord/avatar/{server}/{mediaID}/{checksum}", br.serveMediaProxy).Methods(http.MethodGet)
 	}
 	br.DMA = newDirectMediaAPI(br)
+	br.initReactionRelayBots()
 	br.WaitWebsocketConnected()
 	go br.startUsers()
 }

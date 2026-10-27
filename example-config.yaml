@@ -367,6 +367,15 @@ bridge:
         "example.com": user
         "@admin:example.com": admin
 
+    # Stand-in Discord bot accounts for relay-only Matrix users.
+    # Relayed messages go through the portal's webhook, but Discord webhooks can't add reactions.
+    # Mapping a Matrix user ID to a bot token here makes the bridge add that user's reactions
+    # (and remove them on redaction) through the bot instead of dropping them. Invite the bot to
+    # the server with the "Add Reactions" permission and give it the user's nickname and avatar.
+    # The token may be pasted with or without the "Bot " prefix.
+    reaction_relay_bots:
+        # "@relayuser:example.com": "bot token"
+
 # Logging config. See https://github.com/tulir/zeroconfig for details.
 logging:
     min_level: debug
