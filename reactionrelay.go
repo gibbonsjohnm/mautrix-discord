@@ -21,6 +21,8 @@ import (
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
+	"maunium.net/go/mautrix/bridge/bridgeconfig"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -123,6 +125,34 @@ func (br *DiscordBridge) GetReactionRelayBot(mxid id.UserID) *ReactionRelayBot {
 		return nil
 	}
 	return br.reactionRelayBots.getByMXID(mxid)
+}
+
+// handleRelayUserReaction is registered alongside the framework's reaction
+// handler. mautrix-go's MatrixHandler.HandleReaction silently drops reactions
+// from senders below the "user" permission level or without a Discord login,
+// so relay-only users' reactions never reach the portal. This handler admits
+// exactly those senders when a stand-in bot is configured for them, mirroring
+// the framework's ignore rules, and hands the event to the portal queue.
+func (br *DiscordBridge) handleRelayUserReaction(evt *event.Event) {
+	if evt.Sender == br.Bot.UserID || br.IsGhost(evt.Sender) {
+		return
+	}
+	if br.GetReactionRelayBot(evt.Sender) == nil {
+		return
+	}
+	user := br.GetUserByMXID(evt.Sender)
+	if user == nil || user.GetPermissionLevel() <= 0 {
+		return
+	}
+	if user.GetPermissionLevel() >= bridgeconfig.PermissionLevelUser && user.IsLoggedIn() {
+		// The framework's handler already delivers these; avoid handling twice.
+		return
+	}
+	portal := br.GetPortalByMXID(evt.RoomID)
+	if portal == nil {
+		return
+	}
+	portal.ReceiveMatrixEvent(user, evt)
 }
 
 // IsReactionRelayBot reports whether a Discord user ID belongs to one of the

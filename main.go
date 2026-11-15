@@ -99,6 +99,8 @@ func (br *DiscordBridge) Init() {
 	br.CommandProcessor = commands.NewProcessor(&br.Bridge)
 	br.RegisterCommands()
 	br.EventProcessor.On(event.StateTombstone, br.HandleTombstone)
+	// Runs in addition to the framework's HandleReaction, which drops relay users' reactions.
+	br.EventProcessor.On(event.EventReaction, br.handleRelayUserReaction)
 
 	matrixHTMLParser.PillConverter = br.pillConverter
 

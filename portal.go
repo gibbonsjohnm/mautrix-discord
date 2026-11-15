@@ -2009,6 +2009,13 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 	var err error
 	if relayBot != nil {
 		err = relayBot.Session.MessageReactionAdd(msg.DiscordProtoChannelID(), msg.DiscordID, emojiID)
+		portal.log.Info().
+			Str("event_id", evt.ID.String()).
+			Str("sender", sender.MXID.String()).
+			Str("bot_user_id", relayBot.UserID).
+			Str("emoji", emojiID).
+			Err(err).
+			Msg("Relayed Matrix reaction through stand-in bot")
 	} else {
 		err = sender.Session.MessageReactionAddUser(portal.GuildID, msg.DiscordProtoChannelID(), msg.DiscordID, emojiID)
 	}
