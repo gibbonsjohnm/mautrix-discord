@@ -43,6 +43,13 @@ func (fq *FileQuery) GetEmojiByMXC(mxc id.ContentURI) *File {
 	return fq.New().Scan(fq.db.QueryRow(query, mxc.String()))
 }
 
+// GetEmojiByName finds a cached Discord custom emoji by its shortcode name,
+// preferring the most recently seen one if several servers use the same name.
+func (fq *FileQuery) GetEmojiByName(name string) *File {
+	query := fileSelect + " WHERE emoji_name=$1 AND id<>'' ORDER BY timestamp DESC LIMIT 1"
+	return fq.New().Scan(fq.db.QueryRow(query, name))
+}
+
 type File struct {
 	db  *Database
 	log log.Logger

@@ -1992,6 +1992,15 @@ func (portal *Portal) handleMatrixReaction(sender *User, evt *event.Event) {
 			go portal.sendMessageMetrics(evt, fmt.Errorf("%w %s", errUnknownEmoji, emojiID), "Ignoring")
 			return
 		}
+	} else if name, ok := parseEmojiShortcode(emojiID); ok {
+		// With custom_emoji_reactions disabled, Discord custom emoji reactions are bridged to
+		// Matrix as ":name:" text keys. Map a Matrix user echoing one of those back to the emoji.
+		if emojiFile := portal.bridge.DB.File.GetEmojiByName(name); emojiFile != nil {
+			emojiID = fmt.Sprintf("%s:%s", emojiFile.EmojiName, emojiFile.ID)
+		} else {
+			go portal.sendMessageMetrics(evt, fmt.Errorf("%w %s", errUnknownEmoji, emojiID), "Ignoring")
+			return
+		}
 	} else {
 		emojiID = variationselector.FullyQualify(emojiID)
 	}
