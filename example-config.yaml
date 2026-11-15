@@ -373,8 +373,8 @@ bridge:
     # (and remove them on redaction) through the bot instead of dropping them. Invite the bot to
     # the server with the "Add Reactions" permission and give it the user's nickname and avatar.
     # The token may be pasted with or without the "Bot " prefix.
-    reaction_relay_bots:
-        # "@relayuser:example.com": "bot token"
+    # Example: "@relayuser:example.com": "bot token"
+    reaction_relay_bots: {}
 
 # Logging config. See https://github.com/tulir/zeroconfig for details.
 logging:
